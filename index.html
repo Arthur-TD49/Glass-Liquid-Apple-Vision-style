@@ -183,6 +183,10 @@
   .changelog-date{font-size:12px;opacity:0.7;margin-bottom:8px}
   .changelog-list{font-size:14px;color:var(--text-secondary);line-height:1.6}
 
+  .auth-form{display:flex;flex-direction:column;gap:8px}
+  .auth-form input{padding:10px;border-radius:10px;border:1px solid rgba(16,24,40,0.06);background:transparent}
+  .auth-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
+
   @media (max-width:700px){
     .search-field{padding:12px}
     .card{padding:20px}
@@ -245,13 +249,7 @@
 
       <div class="hint">Appuie sur <kbd>/</kbd> pour focus • <kbd>Ctrl+K</kbd> raccourci • <kbd>Esc</kbd> fermer</div>
 
-      <div class="footer">
-        <a onclick="openModal('about')">À propos</a>
-        <a onclick="openModal('blog')">Blog & FAQ</a>
-        <a onclick="openModal('history')">Historique</a>
-        <a onclick="openModal('changelog')">Changelog</a>
-        <a onclick="openModal('settings')">Paramètres</a>
-      </div>
+      <div class="footer" id="footer"></div>
 
       <div class="halo" id="halo" aria-hidden="true"></div>
     </main>
@@ -265,13 +263,54 @@
   </div>
 
 <script>
+  // --- State & persistence ---
   let isSearching = false;
-  let searchHistory = JSON.parse(localStorage.getItem('glSearchHistory') || '[]').slice(0, 20);
   let currentTheme = localStorage.getItem('glTheme') || 'light';
+  let currentUser = JSON.parse(localStorage.getItem('glCurrentUser') || 'null'); // {email, displayName}
+  let searchHistory = [];
 
   if (currentTheme === 'dark') {
     document.documentElement.classList.add('dark');
   }
+
+  // Initialize history: if user logged in, load their history, otherwise global
+  function loadHistoryForCurrentUser() {
+    if (currentUser && currentUser.email) {
+      searchHistory = JSON.parse(localStorage.getItem('glHistory_' + currentUser.email) || '[]').slice(0,20);
+    } else {
+      searchHistory = JSON.parse(localStorage.getItem('glSearchHistory') || '[]').slice(0,20);
+    }
+  }
+
+  loadHistoryForCurrentUser();
+
+  // Update footer to show auth controls
+  function updateFooterAuth(){
+    const footer = document.getElementById('footer');
+    if (currentUser && currentUser.email) {
+      footer.innerHTML = `
+        <a onclick="openModal('about')">À propos</a>
+        <a onclick="openModal('blog')">Blog & FAQ</a>
+        <a onclick="openModal('history')">Historique</a>
+        <a onclick="openModal('changelog')">Changelog</a>
+        <a onclick="openModal('settings')">Paramètres</a>
+        <a onclick=\"openModal('profile')\">👤 ${escapeHtml(currentUser.displayName || currentUser.email.split('@')[0])}</a>
+        <a onclick=\"logout()\">Se déconnecter</a>
+      `;
+    } else {
+      footer.innerHTML = `
+        <a onclick="openModal('about')">À propos</a>
+        <a onclick="openModal('blog')">Blog & FAQ</a>
+        <a onclick="openModal('history')">Historique</a>
+        <a onclick="openModal('changelog')">Changelog</a>
+        <a onclick="openModal('settings')">Paramètres</a>
+        <a onclick="openModal('auth','login')">Se connecter</a>
+        <a onclick="openModal('auth','signup')">S'inscrire</a>
+      `;
+    }
+  }
+
+  updateFooterAuth();
 
   window.addEventListener('load', () => {
     requestAnimationFrame(() => {
@@ -336,11 +375,15 @@
     resultsDiv.innerHTML = '<div class="loading"><div class="spinner"></div>Recherche en cours...</div>';
     resultsDiv.classList.add('show');
 
-    // Add to history
+    // Add to history (per-user or global)
     if (!searchHistory.includes(query)) {
       searchHistory.unshift(query);
       searchHistory = searchHistory.slice(0, 20);
-      localStorage.setItem('glSearchHistory', JSON.stringify(searchHistory));
+      if (currentUser && currentUser.email) {
+        localStorage.setItem('glHistory_' + currentUser.email, JSON.stringify(searchHistory));
+      } else {
+        localStorage.setItem('glSearchHistory', JSON.stringify(searchHistory));
+      }
     }
 
     try {
@@ -380,7 +423,7 @@
 
   function escapeHtml(text) {
     const map = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'};
-    return text.replace(/[&<>"']/g, m => map[m]);
+    return (text + '').replace(/[&<>"']/g, m => map[m]);
   }
 
   function onSubmit(e){
@@ -420,98 +463,223 @@
     localStorage.setItem('glTheme', currentTheme);
   }
 
-  function openModal(type) {
+  // --- Authentication (local, client-side) ---
+  // Users are stored in localStorage under key 'glUsers' as an object: { email: {displayName, pwHash, createdAt} }
+
+  async function hashPassword(pw) {
+    const enc = new TextEncoder();
+    const data = enc.encode(pw);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2,'0')).join('');
+  }
+
+  function getUsers() {
+    return JSON.parse(localStorage.getItem('glUsers') || '{}');
+  }
+
+  function saveUsers(users) {
+    localStorage.setItem('glUsers', JSON.stringify(users));
+  }
+
+  async function signup(email, displayName, password) {
+    const users = getUsers();
+    if (users[email]) throw new Error('Un compte existe déjà avec cet e-mail.');
+    const pwHash = await hashPassword(password);
+    users[email] = { displayName: displayName || email.split('@')[0], pwHash, createdAt: new Date().toISOString() };
+    saveUsers(users);
+    // Auto-login
+    currentUser = { email, displayName: users[email].displayName };
+    localStorage.setItem('glCurrentUser', JSON.stringify(currentUser));
+    // migrate global history to user if any
+    const globalHist = JSON.parse(localStorage.getItem('glSearchHistory') || '[]');
+    if (globalHist.length) {
+      localStorage.setItem('glHistory_' + email, JSON.stringify(globalHist));
+      localStorage.removeItem('glSearchHistory');
+    }
+    loadHistoryForCurrentUser();
+    updateFooterAuth();
+  }
+
+  async function login(email, password) {
+    const users = getUsers();
+    const user = users[email];
+    if (!user) throw new Error('Utilisateur non trouvé.');
+    const pwHash = await hashPassword(password);
+    if (pwHash !== user.pwHash) throw new Error('Mot de passe incorrect.');
+    currentUser = { email, displayName: user.displayName };
+    localStorage.setItem('glCurrentUser', JSON.stringify(currentUser));
+    loadHistoryForCurrentUser();
+    updateFooterAuth();
+  }
+
+  function logout() {
+    currentUser = null;
+    localStorage.removeItem('glCurrentUser');
+    loadHistoryForCurrentUser();
+    updateFooterAuth();
+    closeModal();
+  }
+
+  // --- Modal content: extend openModal to support auth and profile ---
+  function openModal(type, sub) {
     const modal = document.getElementById('modal');
     const modalBody = document.getElementById('modalBody');
     
     const content = {
-      about: `
-        <h2>À propos de Glass Liquid</h2>
-        <p>Glass Liquid est un moteur de recherche moderne conçu avec élégance et performance. Inspiré par le design Apple Vision, il offre une expérience de recherche fluide et intuitive.</p>
-        <h3>Caractéristiques</h3>
-        <ul>
-          <li>🎨 Design glassmorphism moderne</li>
-          <li>⚡ Animations fluides et transitions douces</li>
-          <li>♿ Accessibilité complète (WCAG)</li>
-          <li>🔍 Autocomplétion intelligente</li>
-          <li>📱 Responsive sur tous les appareils</li>
-          <li>🌙 Mode sombre automatique</li>
-          <li>📦 Installation PWA</li>
-        </ul>
-        <p style="font-size:12px;opacity:0.7;margin-top:16px;">Version 2.0 — 2025</p>
-      `,
-      blog: `
-        <h2>Blog & FAQ</h2>
-        <h3>Comment utiliser Glass Liquid ?</h3>
-        <p>Glass Liquid fonctionne comme un moteur de recherche classique. Tapez votre requête et appuyez sur Entrée ou cliquez sur "Recherche".</p>
-        <h3>Raccourcis clavier</h3>
-        <ul>
-          <li><strong>/</strong> — Focus le champ de recherche</li>
-          <li><strong>Ctrl+K</strong> (ou Cmd+K) — Focus rapide</li>
-          <li><strong>Entrée</strong> — Lancer la recherche</li>
-          <li><strong>Esc</strong> — Fermer les modales</li>
-        </ul>
-        <h3>Autocomplétion</h3>
-        <p>Commencez à taper pour voir les suggestions basées sur votre historique de recherche. Cliquez ou sélectionnez une suggestion pour la rechercher.</p>
-        <h3>Historique</h3>
-        <p>Votre historique de recherche est sauvegardé localement sur votre appareil. Vous pouvez le consulter et le nettoyer depuis les paramètres.</p>
-        <h3>Mode sombre</h3>
-        <p>Cliquez sur 🌙 pour basculer entre le mode clair et le mode sombre. Votre préférence est mémorisée.</p>
-      `,
-      history: `
-        <h2>Historique de recherche</h2>
-        ${searchHistory.length > 0 ? `
-          <div class="history-list">
-            ${searchHistory.map((item, idx) => `
-              <div class="history-item">
-                <span onclick="selectSuggestion('${escapeHtml(item)}')" style="cursor:pointer;flex:1">${escapeHtml(item)}</span>
-                <button class="history-delete" onclick="deleteHistoryItem(${idx})">🗑️</button>
-              </div>
-            `).join('')}
-          </div>
-          <button class="btn ghost" onclick="clearHistory()" style="margin-top:12px;width:100%">Vider l'historique</button>
-        ` : '<p style="opacity:0.7;">Votre historique est vide.</p>'}
-      `,
-      changelog: `
-        <h2>Changelog</h2>
-        <div class="changelog-item">
-          <div class="changelog-version">v2.0 — Mise à jour majeure</div>
-          <div class="changelog-date">17 Octobre 2025</div>
-          <div class="changelog-list">
-            ✨ Ajout de l'historique de recherche<br>
-            ✨ Autocomplétion intelligente<br>
-            ✨ Mode sombre complet<br>
-            ✨ Support PWA (installer sur l'écran d'accueil)<br>
-            🎨 Nouvelle interface modale raffinée<br>
-            🐛 Corrections de bugs mineurs
-          </div>
-        </div>
-        <div class="changelog-item">
-          <div class="changelog-version">v1.0 — Lancement initial</div>
-          <div class="changelog-date">1er Octobre 2025</div>
-          <div class="changelog-list">
-            🚀 Lancement officiel de Glass Liquid<br>
-            🔍 Moteur de recherche fonctionnel<br>
-            🎨 Design glassmorphism Apple Vision<br>
-            ⌨️ Raccourcis clavier
-          </div>
-        </div>
-      `,
-      settings: `
-        <h2>Paramètres</h2>
-        <h3>Thème</h3>
-        <div class="theme-picker">
-          <button class="theme-btn ${currentTheme === 'light' ? 'active' : ''}" onclick="setTheme('light')">☀️ Clair</button>
-          <button class="theme-btn ${currentTheme === 'dark' ? 'active' : ''}" onclick="setTheme('dark')">🌙 Sombre</button>
-        </div>
-        <h3>Données</h3>
-        <p>Votre historique de recherche et vos préférences sont stockés localement sur votre appareil. Aucune donnée n'est envoyée à nos serveurs.</p>
-        <button class="btn ghost" onclick="clearAllData()" style="width:100%;margin-top:12px">Effacer toutes les données</button>
-        <h3>À propos du PWA</h3>
-        <p>Glass Liquid peut être installé comme application sur votre écran d'accueil. Sur mobile/tablette, cliquez sur "Partager" puis "Sur l'écran d'accueil". Sur desktop, cliquez sur l'icône dans la barre d'adresse.</p>
-      `
+      about: `...`,
+      blog: `...`,
+      history: `...`,
+      changelog: `...`,
+      settings: `...`,
     };
-    
+
+    // lightweight templates for existing content to keep file compact
+    content.about = `
+      <h2>À propos de Glass Liquid</h2>
+      <p>Glass Liquid est un moteur de recherche moderne conçu avec élégance et performance. Inspiré par le design Apple Vision, il offre une expérience de recherche fluide et intuitive.</p>
+      <h3>Caractéristiques</h3>
+      <ul>
+        <li>🎨 Design glassmorphism moderne</li>
+        <li>⚡ Animations fluides et transitions douces</li>
+        <li>♿ Accessibilité complète (WCAG)</li>
+        <li>🔍 Autocomplétion intelligente</li>
+        <li>📱 Responsive sur tous les appareils</li>
+        <li>🌙 Mode sombre automatique</li>
+        <li>📦 Installation PWA</li>
+      </ul>
+      <p style="font-size:12px;opacity:0.7;margin-top:16px;">Version 2.0 — 2025</p>
+    `;
+
+    content.blog = `
+      <h2>Blog & FAQ</h2>
+      <h3>Comment utiliser Glass Liquid ?</h3>
+      <p>Glass Liquid fonctionne comme un moteur de recherche classique. Tapez votre requête et appuyez sur Entrée ou cliquez sur "Recherche".</p>
+      <h3>Raccourcis clavier</h3>
+      <ul>
+        <li><strong>/</strong> — Focus le champ de recherche</li>
+        <li><strong>Ctrl+K</strong> (ou Cmd+K) — Focus rapide</li>
+        <li><strong>Entrée</strong> — Lancer la recherche</li>
+        <li><strong>Esc</strong> — Fermer les modales</li>
+      </ul>
+    `;
+
+    content.changelog = `
+      <h2>Changelog</h2>
+      <div class="changelog-item">
+        <div class="changelog-version">v2.0 — Mise à jour majeure</div>
+        <div class="changelog-date">17 Octobre 2025</div>
+        <div class="changelog-list">
+          ✨ Ajout de l'historique de recherche<br>
+          ✨ Autocomplétion intelligente<br>
+          ✨ Mode sombre complet<br>
+          ✨ Support PWA (installer sur l'écran d'accueil)<br>
+          🎨 Nouvelle interface modale raffinée<br>
+          🐛 Corrections de bugs mineurs
+        </div>
+      </div>
+    `;
+
+    content.history = `
+      <h2>Historique de recherche</h2>
+      ${searchHistory.length > 0 ? `
+        <div class="history-list">
+          ${searchHistory.map((item, idx) => `
+            <div class="history-item">
+              <span onclick="selectSuggestion('${escapeHtml(item)}')" style="cursor:pointer;flex:1">${escapeHtml(item)}</span>
+              <button class="history-delete" onclick="deleteHistoryItem(${idx})">🗑️</button>
+            </div>
+          `).join('')}
+        </div>
+        <button class="btn ghost" onclick="clearHistory()" style="margin-top:12px;width:100%">Vider l'historique</button>
+      ` : '<p style="opacity:0.7;">Votre historique est vide.</p>'}
+    `;
+
+    content.settings = `
+      <h2>Paramètres</h2>
+      <h3>Thème</h3>
+      <div class="theme-picker">
+        <button class="theme-btn ${currentTheme === 'light' ? 'active' : ''}" onclick="setTheme('light')">☀️ Clair</button>
+        <button class="theme-btn ${currentTheme === 'dark' ? 'active' : ''}" onclick="setTheme('dark')">🌙 Sombre</button>
+      </div>
+      <h3>Données</h3>
+      <p>Votre historique de recherche et vos préférences sont stockés localement sur votre appareil. Aucune donnée n'est envoyée à nos serveurs.</p>
+      <button class="btn ghost" onclick="clearAllData()" style="width:100%;margin-top:12px">Effacer toutes les données</button>
+      <h3>Comptes</h3>
+      <p>Gérer les comptes locaux enregistrés sur cet appareil.</p>
+      <button class="btn ghost" onclick="openModal('auth','manage')" style="width:100%;margin-top:12px">Gérer les comptes</button>
+    `;
+
+    // Auth & profile special handling
+    if (type === 'auth') {
+      if (sub === 'signup') {
+        modalBody.innerHTML = `
+          <h2>Créer un compte</h2>
+          <form id="signupForm" class="auth-form">
+            <input id="su_email" placeholder="E-mail" type="email" required />
+            <input id="su_name" placeholder="Nom affiché (optionnel)" type="text" />
+            <input id="su_pw" placeholder="Mot de passe" type="password" required />
+            <div class="auth-actions">
+              <button type="button" class="btn ghost" onclick="openModal('auth','login')">J'ai déjà un compte</button>
+              <button type="button" class="btn" onclick="handleSignup()">S'inscrire</button>
+            </div>
+            <div style="margin-top:8px;font-size:13px;color:var(--text-secondary);">Les mots de passe sont stockés localement sous forme de hachage SHA-256.</div>
+          </form>
+        `;
+      } else if (sub === 'login') {
+        modalBody.innerHTML = `
+          <h2>Se connecter</h2>
+          <form id="loginForm" class="auth-form">
+            <input id="li_email" placeholder="E-mail" type="email" required />
+            <input id="li_pw" placeholder="Mot de passe" type="password" required />
+            <div class="auth-actions">
+              <button type="button" class="btn ghost" onclick="openModal('auth','signup')">Créer un compte</button>
+              <button type="button" class="btn" onclick="handleLogin()">Connexion</button>
+            </div>
+          </form>
+        `;
+      } else if (sub === 'manage') {
+        const users = getUsers();
+        const list = Object.keys(users).map(e => `
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-radius:8px;margin-bottom:6px;background:rgba(123,107,255,0.02)">
+            <div>
+              <div style="font-weight:600">${escapeHtml(users[e].displayName || e)}</div>
+              <div style="font-size:12px;opacity:0.7">${escapeHtml(e)}</div>
+            </div>
+            <div>
+              <button class="btn ghost" onclick="deleteUser('${encodeURIComponent(e)}')">Supprimer</button>
+            </div>
+          </div>
+        `).join('') || '<p style="opacity:0.7">Aucun compte enregistré.</p>';
+
+        modalBody.innerHTML = `
+          <h2>Comptes enregistrés</h2>
+          <div>${list}</div>
+          <div style="margin-top:12px;font-size:13px;color:var(--text-secondary);">Supprimer un compte supprimera aussi son historique local.</div>
+        `;
+      }
+      modal.classList.add('show');
+      return;
+    }
+
+    if (type === 'profile') {
+      if (!currentUser) {
+        openModal('auth','login');
+        return;
+      }
+      modalBody.innerHTML = `
+        <h2>Profil</h2>
+        <p><strong>Nom :</strong> ${escapeHtml(currentUser.displayName || '')}</p>
+        <p><strong>E-mail :</strong> ${escapeHtml(currentUser.email)}</p>
+        <div style="margin-top:12px;display:flex;gap:8px;">
+          <button class="btn" onclick="logout()">Se déconnecter</button>
+          <button class="btn ghost" onclick="openModal('auth','manage')">Gérer comptes</button>
+        </div>
+      `;
+      modal.classList.add('show');
+      return;
+    }
+
     modalBody.innerHTML = content[type] || '<h2>Erreur</h2><p>Contenu non disponible.</p>';
     modal.classList.add('show');
   }
@@ -528,8 +696,7 @@
     }
     currentTheme = theme;
     localStorage.setItem('glTheme', theme);
-    
-    // Refresh modal to show updated theme
+    // Refresh modal to show updated theme if open
     const modalBody = document.getElementById('modalBody');
     if (modalBody.innerHTML.includes('theme-picker')) {
       openModal('settings');
@@ -538,27 +705,78 @@
 
   function deleteHistoryItem(index) {
     searchHistory.splice(index, 1);
-    localStorage.setItem('glSearchHistory', JSON.stringify(searchHistory));
+    if (currentUser && currentUser.email) {
+      localStorage.setItem('glHistory_' + currentUser.email, JSON.stringify(searchHistory));
+    } else {
+      localStorage.setItem('glSearchHistory', JSON.stringify(searchHistory));
+    }
     openModal('history');
   }
 
   function clearHistory() {
     if (confirm('Êtes-vous sûr de vouloir effacer votre historique de recherche ?')) {
       searchHistory = [];
-      localStorage.setItem('glSearchHistory', JSON.stringify(searchHistory));
+      if (currentUser && currentUser.email) {
+        localStorage.setItem('glHistory_' + currentUser.email, JSON.stringify(searchHistory));
+      } else {
+        localStorage.setItem('glSearchHistory', JSON.stringify(searchHistory));
+      }
       openModal('history');
     }
   }
 
   function clearAllData() {
     if (confirm('Êtes-vous sûr de vouloir effacer toutes les données ? Cette action ne peut pas être annulée.')) {
-      searchHistory = [];
-      localStorage.setItem('glSearchHistory', JSON.stringify(searchHistory));
-      currentTheme = 'light';
-      localStorage.setItem('glTheme', 'light');
-      document.documentElement.classList.remove('dark');
+      // Remove all app keys but keep users? We'll clear everything for a true reset
+      Object.keys(localStorage).forEach(k => {
+        if (k.startsWith('gl')) localStorage.removeItem(k);
+      });
+      currentUser = null;
+      loadHistoryForCurrentUser();
+      updateFooterAuth();
       openModal('settings');
     }
+  }
+
+  // --- Handlers for auth forms ---
+  async function handleSignup() {
+    const email = document.getElementById('su_email').value.trim().toLowerCase();
+    const name = document.getElementById('su_name').value.trim();
+    const pw = document.getElementById('su_pw').value;
+    try {
+      if (!email || !pw) throw new Error('E-mail et mot de passe requis.');
+      await signup(email, name, pw);
+      alert('Compte créé et connecté.');
+      closeModal();
+    } catch (err) {
+      alert(err.message || 'Erreur création de compte');
+    }
+  }
+
+  async function handleLogin() {
+    const email = document.getElementById('li_email').value.trim().toLowerCase();
+    const pw = document.getElementById('li_pw').value;
+    try {
+      if (!email || !pw) throw new Error('E-mail et mot de passe requis.');
+      await login(email, pw);
+      alert('Connecté.');
+      closeModal();
+    } catch (err) {
+      alert(err.message || 'Erreur connexion');
+    }
+  }
+
+  // Delete user (and their history)
+  function deleteUser(encodedEmail) {
+    const email = decodeURIComponent(encodedEmail);
+    if (!confirm('Supprimer le compte ' + email + ' ? Cette action supprimera aussi son historique local.')) return;
+    const users = getUsers();
+    delete users[email];
+    saveUsers(users);
+    localStorage.removeItem('glHistory_' + email);
+    // If deleting current user, log out
+    if (currentUser && currentUser.email === email) logout();
+    openModal('auth','manage');
   }
 
   document.addEventListener('keydown', (e) => {
@@ -572,6 +790,9 @@
       closeModal();
     }
   });
+
+  // Ensure footer reflects auth state on load
+  updateFooterAuth();
 </script>
 </body>
 </html>
