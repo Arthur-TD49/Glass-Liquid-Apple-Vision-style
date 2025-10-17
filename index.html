@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Glass Liquid Search — Accueil</title>
-<meta name="description" content="Prototype Glass Liquid — Apple Vision style — page d'accueil" />
+<title>Glass Liquid Search — Moteur de recherche moderne</title>
+<meta name="description" content="Glass Liquid — Moteur de recherche elegant avec design Apple Vision" />
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap" rel="stylesheet">
 <style>
   :root{
@@ -124,6 +124,15 @@
   .halo { position:absolute; inset:auto; left:50%; transform:translateX(-50%); bottom:28px; width:180px; height:180px;border-radius:50%; background: radial-gradient(circle at 40% 40%, rgba(123,107,255,0.10), rgba(0,255,214,0.06) 35%, transparent 60%); filter:blur(24px); pointer-events:none; opacity:0; transition:opacity .6s; }
   .halo.show{opacity:1}
 
+  /* Modal */
+  .modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); align-items:center; justify-content:center; z-index:1000; }
+  .modal.show { display:flex; }
+  .modal-content { background:white; border-radius:var(--radius); padding:28px; max-width:500px; width:90%; box-shadow:0 20px 60px rgba(16,24,40,0.15); max-height:80vh; overflow-y:auto; }
+  .modal-close { float:right; font-size:24px; cursor:pointer; color:var(--muted); background:none; border:none; padding:0; width:32px; height:32px; display:flex; align-items:center; justify-content:center; }
+  .modal-close:hover { background:rgba(123,107,255,0.05); border-radius:8px; }
+  .modal h2 { margin-top:0; color:var(--accent-1); }
+  .modal p { line-height:1.6; color:var(--muted); }
+
   /* small responsive */
   @media (max-width:700px){
     .search-field{padding:12px}
@@ -165,33 +174,41 @@
         </svg>
       </div>
 
-      <div class="subtitle" id="subtitle">Glass Liquid — Apple Vision style</div>
+      <div class="subtitle" id="subtitle">Moteur de recherche élégant et moderne</div>
 
       <form id="searchForm" class="search-row" role="search" onsubmit="onSubmit(event)" aria-label="Formulaire de recherche">
         <div class="search-field" role="presentation">
           <button type="button" tabindex="-1" aria-hidden="true">🔍</button>
-          <input id="q" name="q" type="search" autocomplete="off" placeholder="Tape ta recherche (ex : 'meilleurs cafés près de moi')" aria-label="Champ de recherche" />
-          <button type="button" class="focusable" onclick="clearQ()" aria-label="Effacer">✖</button>
+          <input id="q" name="q" type="search" autocomplete="off" placeholder="Votre recherche..." aria-label="Champ de recherche" />
+          <button type="button" class="focusable" onclick="clearQ()" aria-label="Effacer" style="background:none; border:none; cursor:pointer; padding:4px; color:var(--muted); font-size:14px;">✖</button>
         </div>
 
         <div class="search-actions" role="group" aria-label="Actions de recherche">
           <button type="submit" class="btn focusable" id="searchBtn">Recherche</button>
-          <button type="button" class="btn ghost focusable" onclick="feelingLucky()" id="luckyBtn">J'ai de la chance</button>
+          <button type="button" class="btn ghost focusable" onclick="feelingLucky()">Surprise</button>
         </div>
       </form>
 
       <div class="results" id="results"></div>
 
-      <div class="hint">Appuie sur <kbd>/</kbd> pour focus la recherche • Design Apple Vision — prototype</div>
+      <div class="hint">Appuie sur <kbd>/</kbd> pour focus la recherche • Raccourci : <kbd>Ctrl+K</kbd></div>
 
-      <div class="footer" aria-hidden="false" style="margin-top:auto">
-        <a onclick="showInfo('À propos')">À propos</a>
-        <a onclick="showInfo('Confidentialité')">Confidentialité</a>
-        <a onclick="showInfo('Paramètres')">Paramètres</a>
+      <div class="footer">
+        <a onclick="openModal('about')">À propos</a>
+        <a onclick="openModal('privacy')">Confidentialité</a>
+        <a onclick="openModal('settings')">Paramètres</a>
       </div>
 
       <div class="halo" id="halo" aria-hidden="true"></div>
     </main>
+  </div>
+
+  <!-- Modals -->
+  <div class="modal" id="modal">
+    <div class="modal-content">
+      <button class="modal-close" onclick="closeModal()">×</button>
+      <div id="modalBody"></div>
+    </div>
   </div>
 
 <script>
@@ -208,10 +225,10 @@
     });
   });
 
-  // Keyboard shortcut "/" to focus search
+  // Keyboard shortcuts
   const qInput = document.getElementById('q');
   document.addEventListener('keydown', (e) => {
-    if(e.key === '/' && document.activeElement !== qInput){
+    if(e.key === '/' && document.activeElement !== qInput && !document.getElementById('modal').classList.contains('show')){
       e.preventDefault();
       qInput.focus();
       qInput.select();
@@ -223,14 +240,14 @@
     }
   });
 
-  // Real search functionality using DuckDuckGo API
+  // Search using Brave Search API
   async function performSearch(query) {
     if (!query.trim() || isSearching) return;
     
     isSearching = true;
     const resultsDiv = document.getElementById('results');
     const searchBtn = document.getElementById('searchBtn');
-    const luckyBtn = document.getElementById('luckyBtn');
+    const luckyBtn = document.querySelector('[onclick="feelingLucky()"]');
     
     searchBtn.disabled = true;
     luckyBtn.disabled = true;
@@ -239,30 +256,51 @@
     resultsDiv.classList.add('show');
 
     try {
-      // Using DuckDuckGo API
-      const response = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1`);
+      const response = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=8`, {
+        headers: { 'Accept': 'application/json' }
+      }).catch(() => {
+        // Fallback to DuckDuckGo if Brave fails
+        return fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1`);
+      });
+
       const data = await response.json();
       
       let html = '';
+      let results = [];
+
+      // Try Brave API results first
+      if (data.web && Array.isArray(data.web.results)) {
+        results = data.web.results.slice(0, 8);
+      } 
+      // Fallback to DuckDuckGo
+      else if (data.RelatedTopics) {
+        results = data.RelatedTopics.filter(r => r.FirstURL).slice(0, 8);
+      }
       
-      // Get results from RelatedTopics
-      const results = data.RelatedTopics || [];
-      const webResults = results.slice(0, 8);
-      
-      if (webResults.length === 0) {
+      if (results.length === 0) {
         html = '<div class="result-item"><p style="opacity:0.7;">Aucun résultat trouvé pour "' + query + '"</p></div>';
       } else {
-        webResults.forEach(result => {
-          if (result.FirstURL) {
-            const title = result.Text.split(' - ')[0] || 'Résultat';
-            const desc = result.Text || '';
-            const url = result.FirstURL;
-            
+        results.forEach(result => {
+          let title, desc, url;
+          
+          if (result.title) {
+            // Brave API format
+            title = result.title;
+            desc = result.description || '';
+            url = result.url;
+          } else if (result.FirstURL) {
+            // DuckDuckGo format
+            title = result.Text.split(' - ')[0] || 'Résultat';
+            desc = result.Text || '';
+            url = result.FirstURL;
+          }
+          
+          if (url) {
             html += `
               <div class="result-item">
-                <a href="${url}" target="_blank" rel="noopener" class="result-title">${title}</a>
-                <div class="result-url">${url}</div>
-                <div class="result-desc">${desc.substring(0, 150)}...</div>
+                <a href="${url}" target="_blank" rel="noopener noreferrer" class="result-title">${escapeHtml(title)}</a>
+                <div class="result-url">${new URL(url).hostname}</div>
+                <div class="result-desc">${escapeHtml(desc.substring(0, 150))}</div>
               </div>
             `;
           }
@@ -279,14 +317,18 @@
     luckyBtn.disabled = false;
   }
 
-  // On submit
+  function escapeHtml(text) {
+    const map = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'};
+    return text.replace(/[&<>"']/g, m => map[m]);
+  }
+
   function onSubmit(e){
     e.preventDefault();
     const v = qInput.value.trim();
     if (v) {
       performSearch(v);
       
-      // small visual pulse
+      // visual pulse
       const halo = document.getElementById('halo');
       halo.style.transition = 'opacity .18s, transform .4s';
       halo.style.transform = 'translateY(-8px) scale(1.02)';
@@ -305,15 +347,77 @@
   }
 
   function feelingLucky(){
-    const samples = ['meilleurs cafés Paris', 'apprendre JavaScript', 'recette tarte aux pommes', 'meilleures séries 2025', 'design glassmorphism'];
+    const samples = ['meilleurs cafés Paris', 'apprendre JavaScript', 'recette tarte aux pommes', 'tendances design 2025', 'tunisie tourisme'];
     const pick = samples[Math.floor(Math.random()*samples.length)];
     qInput.value = pick;
     setTimeout(() => performSearch(pick), 100);
   }
 
-  function showInfo(type) {
-    alert(`Prototype — ${type}`);
+  function openModal(type) {
+    const modal = document.getElementById('modal');
+    const modalBody = document.getElementById('modalBody');
+    
+    const content = {
+      about: `
+        <h2>À propos de Glass Liquid</h2>
+        <p>Glass Liquid est un moteur de recherche moderne conçu avec élégance et performance. Inspiré par le design Apple Vision, il offre une expérience de recherche fluide et intuitive.</p>
+        <p><strong>Caractéristiques :</strong></p>
+        <ul style="line-height:1.8">
+          <li>Design glassmorphism moderne</li>
+          <li>Animations fluides et transitions douces</li>
+          <li>Accessibilité complète (WCAG)</li>
+          <li>Recherche instantanée</li>
+          <li>Responsive sur tous les appareils</li>
+        </ul>
+        <p style="font-size:12px;opacity:0.7;margin-top:16px;">Version 1.0 — 2025</p>
+      `,
+      privacy: `
+        <h2>Confidentialité</h2>
+        <p>Glass Liquid respecte votre vie privée. Nous n'enregistrons pas vos données de recherche.</p>
+        <p><strong>Politique de confidentialité :</strong></p>
+        <ul style="line-height:1.8">
+          <li>Aucun suivi des utilisateurs</li>
+          <li>Pas de cookies de suivi</li>
+          <li>Les requêtes sont transmises via HTTPS</li>
+          <li>Aucune vente de données personnelles</li>
+          <li>Conformité RGPD</li>
+        </ul>
+        <p>Pour plus d'informations, consultez notre politique complète.</p>
+      `,
+      settings: `
+        <h2>Paramètres</h2>
+        <p><strong>Raccourcis clavier :</strong></p>
+        <ul style="line-height:1.8">
+          <li><kbd>/</kbd> — Focus le champ de recherche</li>
+          <li><kbd>Ctrl+K</kbd> (ou <kbd>Cmd+K</kbd>) — Focus rapide</li>
+          <li><kbd>Entrée</kbd> — Lancer la recherche</li>
+        </ul>
+        <p><strong>Thème :</strong> Light (défaut)</p>
+        <p style="font-size:13px;opacity:0.7;margin-top:16px;">Les paramètres supplémentaires arriveront bientôt.</p>
+      `
+    };
+    
+    modalBody.innerHTML = content[type] || '<h2>Erreur</h2><p>Contenu non disponible.</p>';
+    modal.classList.add('show');
   }
+
+  function closeModal() {
+    document.getElementById('modal').classList.remove('show');
+  }
+
+  // Close modal on Escape
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeModal();
+    }
+  });
+
+  // Close modal on outside click
+  document.getElementById('modal').addEventListener('click', (e) => {
+    if (e.target === document.getElementById('modal')) {
+      closeModal();
+    }
+  });
 </script>
 </body>
 </html>
